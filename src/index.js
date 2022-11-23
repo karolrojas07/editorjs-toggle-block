@@ -16,35 +16,7 @@ import toggleIcon from '../assets/toggleIcon.svg';
 
 export default class ToggleBlock {
   /**
-   * Icon and title for displaying at the Toolbox
-   * @returns {{tittle: string, icon: string}}
-   */
-  static get toolbox() {
-    return {
-      title: 'Toggle',
-      icon: toggleIcon,
-    };
-  }
-
-  /**
-   * Disables the creation of new EditorJS blocks by pressing
-   * 'enter' when in a toggle block.
-   */
-  static get enableLineBreaks() {
-    return true;
-  }
-
-  /**
-   * Notify core that the read-only mode is supported
-   *
-   * @returns {boolean}
-   */
-  static get isReadOnlySupported() {
-    return true;
-  }
-
-  /**
-   * Render tool`s main Element and fill it with saved data
+   * Render tool's main Element and fill it with saved data
    *
    * @param {{data: object, api: object}}
    * data - Previously saved data
@@ -87,33 +59,298 @@ export default class ToggleBlock {
     this.addSupportForDragAndDropActions();
   }
 
+  // ------------------------- EditorJS methods ------------------------------------
+
   /**
-   * Returns true if the div element is a toggle child, otherwise, returns false
-   * @param {HTMLDivElement} holder
-   * @returns {boolean}
+   * Icon and title for displaying at the Toolbox
+   * @returns {object} {tittle: string, icon: string}
    */
-  isAToggleItem(holder) {
-    return holder.classList.contains('toggle-block__item');
+  static get toolbox() {
+    return {
+      title: 'Toggle',
+      icon: toggleIcon,
+    };
   }
 
   /**
-   * Returns true if the div element is a toggle root, otherwise, returns false
-   * @param {HTMLDivElement} holder
+   * Notify core to disable the creation of new EditorJS blocks by pressing 'enter'
    * @returns {boolean}
    */
-  isAToggleRoot(holder) {
-    return holder.classList.contains('toggle-block__selector') || Boolean(holder.querySelector('.toggle-block__selector'));
+  static get enableLineBreaks() {
+    return true;
   }
 
   /**
-   * First it gets the toggle index.
-   *
-   * After checks the toggle status, if this is 'closed' then open it.
-   *
-   * After inserts a new block after the toggle index and the a method
-   * is called to add the required properties to the new block.
-   * gets the focus.
-   *
+   * Notify core that the read-only mode is supported
+   * @returns {boolean}
+   */
+  static get isReadOnlySupported() {
+    return true;
+  }
+
+  /**
+   * Create a Toggle block when it is selected from the ToolBox
+   * @returns {HTMLDivElement}
+   */
+  render() {
+    this.createToggle();
+
+    // Renders the nested blocks after the toggle root is rendered
+    setTimeout(() => this.renderItems());
+
+    // Adds initial transition for the icon
+    setTimeout(() => this.setInitialTransition());
+
+    return this.wrapper;
+  }
+
+  /**
+   * Extract the Toggle's data from the UI.
+   * @param {HTMLDivElement} blockContent - Toggle tools rendered view
+   * @returns {ToggleBlockData} - saved data
+   */
+  save(blockContent) {
+    const { children } = blockContent;
+    const caption = children[1].innerHTML;
+    const blocks = document.querySelectorAll(`div[foreignKey="${this.wrapper.id}"]`);
+
+    return Object.assign(this.data, {
+      text: caption,
+      items: blocks.length,
+    });
+  }
+
+  /**
+   * Add events for the move up, move down and delete options in the toolbar
+   */
+  renderSettings() {
+    const settingsBar = document.getElementsByClassName('ce-settings--opened');
+    const optionsContainer = settingsBar[0];
+    const options = optionsContainer.lastChild;
+    const toggleIndex = this.api.blocks.getCurrentBlockIndex();
+
+    this.highlightToggleItems(this.wrapper.id);
+
+    setTimeout(() => {
+      this.addEventsMoveButtons('ce-tune-move-down', 0, options, toggleIndex);
+      this.addEventsMoveButtons('ce-tune-move-up', 1, options, toggleIndex);
+
+      const deleteButton = options.getElementsByClassName('ce-settings__button--delete')[0];
+      if (deleteButton) {
+        deleteButton.addEventListener('click', () => {
+          const classesList = deleteButton.classList;
+          const classes = Object.values(classesList);
+
+          if (classes.indexOf('clicked-to-destroy-toggle') === -1) {
+            deleteButton.classList.add('clicked-to-destroy-toggle');
+          } else {
+            this.removeFullToggle(toggleIndex);
+          }
+        });
+      }
+    });
+  }
+
+  // -------------------------------  Initializer methods ---------------------------------------
+
+  /**
+   * Capture space key event to create a Toggle root or the Tab key event to nest a block
+   */
+  addListeners() {
+    if (!this.readOnly) {
+      const redactor = document.activeElement;
+      redactor.addEventListener('keyup', (e) => {
+        const blockContainer = document.activeElement;
+        const currentBlock = this.api.blocks.getCurrentBlockIndex();
+
+        const blockCover = blockContainer.parentElement;
+        const block = blockCover.parentElement;
+
+        if (e.code === 'Space') {
+          this.createToggleWithShortcut(blockContainer);
+        } else if (currentBlock > 0 && !(this.isPartOfAToggle(blockContainer) || this.isPartOfAToggle(block)) && e.code === 'Tab') {
+          this.nestBlock(blockContainer);
+        }
+      });
+    }
+  }
+
+  /**
+   * Restore the item attributes when the undo action is executed.
+   */
+  addSupportForUndoAndRedoActions() {
+    if (!this.readOnly) {
+      const target = document.querySelector('div.codex-editor__redactor');
+
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          if (mutation.type === 'childList') {
+            setTimeout(this.restoreItemAttributes.bind(this, mutation));
+          }
+        });
+      });
+
+      const config = { attributes: true, childList: true, characterData: true };
+
+      observer.observe(target, config);
+    }
+  }
+
+  /**
+   * Drag and drop a whole toggle
+   */
+  addSupportForDragAndDropActions() {
+    if (!this.readOnly) {
+      if (this.wrapper === undefined) {
+        setTimeout(() => this.addSupportForDragAndDropActions(), 250);
+        return;
+      }
+
+      // Set status in attribute to a proper hide and show
+      const toggleBlock = document.querySelector(`#${this.wrapper.id}`).parentNode.parentNode;
+      toggleBlock.setAttribute('status', this.data.status);
+
+      const settingsButton = document.querySelector('.ce-toolbar__settings-btn');
+      settingsButton.setAttribute('draggable', 'true');
+      settingsButton.addEventListener('dragstart', () => {
+        this.startBlock = this.api.blocks.getCurrentBlockIndex();
+        this.nameDragged = this.api.blocks.getBlockByIndex(this.startBlock).name;
+        this.holderDragged = this.api.blocks.getBlockByIndex(this.startBlock).holder;
+      });
+
+      document.addEventListener('drop', (event) => {
+        // Get the position when item was dropped
+        const { target } = event;
+        if (document.contains(target)) {
+          const dropTarget = target.classList.contains('ce-block') ? target : target.closest('.ce-block');
+          if (dropTarget && dropTarget !== this.holderDragged) {
+            let endBlock = this.getIndex(dropTarget);
+
+            // Control the toggle's children will be positioned down of the parent
+            endBlock = this.startBlock < endBlock ? endBlock + 1 : endBlock;
+
+            // Check if the item dropped is another toggle
+            const isTargetAToggle = dropTarget.querySelectorAll('.toggle-block__selector').length > 0
+              || dropTarget.getAttribute('foreignKey') !== null;
+
+            setTimeout(() => {
+              // Verify if the item droped is the toggle
+              if (this.nameDragged === 'toggle') {
+                // Verify if the toggle dropped is the same of this eventListener
+                const currentToggleDropped = this.holderDragged.querySelector(`#${this.wrapper.id}`);
+
+                if (currentToggleDropped) {
+                  // Check if the toggle dropped was not droppen in its children
+                  if (!this.isChild(currentToggleDropped.getAttribute('id'), dropTarget.getAttribute('foreignKey'))) {
+                    // If is a toggle we have to add the attributes to make it a part of the toggle
+                    if (isTargetAToggle) {
+                      const foreignKey = dropTarget.getAttribute('foreignKey')
+                        ?? dropTarget.querySelector('.toggle-block__selector').getAttribute('id');
+
+                      const newToggleIndex = this.getIndex(this.holderDragged);
+                      this.setAttributesToNewBlock(newToggleIndex, foreignKey);
+                    }
+
+                    this.moveChildren(endBlock);
+                  } else {
+                    // If we are dropping in the toggle children,
+                    // we have to move the toggle in the original position
+                    if (this.startBlock === endBlock) {
+                      this.api.blocks.move(this.startBlock + 1, endBlock);
+                    } else {
+                      this.api.blocks.move(this.startBlock, endBlock);
+                    }
+
+                    // And remove the attributes
+                    if (!isTargetAToggle) {
+                      const newToggleIndex = this.getIndex(this.holderDragged);
+                      this.removeAttributesFromNewBlock(newToggleIndex);
+                    }
+                  }
+                }
+              }
+
+              // If we are dropping out of a toggle we have to remove the attributes
+              if (!isTargetAToggle) {
+                const newToggleIndex = this.getIndex(this.holderDragged);
+                this.removeAttributesFromNewBlock(newToggleIndex);
+              }
+            });
+          }
+        }
+      });
+    }
+  }
+
+  // ----------------------- Creational methods ------------------------------------
+
+  /**
+   * Create a the Toggle Root block
+   */
+  createToggle() {
+    this.wrapper = document.createElement('div');
+    this.wrapper.classList.add('toggle-block__selector');
+    this.wrapper.id = this.data.fk;
+
+    const icon = document.createElement('span');
+    const input = document.createElement('div');
+    const defaultContent = document.createElement('div');
+
+    icon.classList.add('toggle-block__icon');
+    icon.innerHTML = toggleIcon;
+
+    input.classList.add('toggle-block__input');
+    input.setAttribute('contentEditable', !this.readOnly);
+    input.innerHTML = this.data.text || '';
+
+    // Events
+    if (!this.readOnly) {
+      // Events to create other blocks and destroy the toggle
+      input.addEventListener('keyup', this.createParagraphFromToggleRoot.bind(this));
+      input.addEventListener('keydown', this.removeToggle.bind(this));
+
+      // Sets the focus at the end of the text when a nested block is deleted with the backspace key
+      input.addEventListener('focusin', () => this.setFocusToggleRootAtTheEnd());
+
+      // Establishes the placeholder for the toggle root when it's empty
+      input.addEventListener('keyup', this.setPlaceHolder.bind(this));
+      input.setAttribute('placeholder', this.placeholder);
+
+      // Calculates the number of toggle items
+      input.addEventListener('focus', this.setDefaultContent.bind(this));
+      input.addEventListener('focusout', this.setDefaultContent.bind(this));
+
+      // Event to add a block when the default content is clicked
+      defaultContent.addEventListener('click', this.clickInDefaultContent.bind(this));
+
+      input.addEventListener('focus', this.setNestedBlockAttributes.bind(this));
+    }
+
+    defaultContent.classList.add('toggle-block__content-default', 'toggle-block__hidden');
+    defaultContent.innerHTML = this.defaultContent;
+
+    this.wrapper.appendChild(icon);
+    this.wrapper.appendChild(input);
+    this.wrapper.appendChild(defaultContent);
+  }
+
+  /**
+   * Create a toggle using the '>' char and then pressing the 'Space' key
+   */
+  createToggleWithShortcut(blockContainer) {
+    const content = blockContainer.textContent;
+
+    if ((content[0] === '>') && !this.isPartOfAToggle(blockContainer)) {
+      const blockCaller = this.api.blocks.getCurrentBlockIndex();
+
+      this.api.blocks.insert('toggle', { text: content.slice(2) }, this.api, blockCaller, true);
+      this.api.blocks.delete(blockCaller + 1);
+      this.api.caret.setToBlock(blockCaller);
+    }
+  }
+
+  /**
+   * Create a Toggle's child when pressing "enter" into the Toggle root title
    * @param {KeyboardEvent} e - key up event
    */
   createParagraphFromToggleRoot(e) {
@@ -149,55 +386,48 @@ export default class ToggleBlock {
     this.setAttributesToNewBlock();
   }
 
+  // ------------------------------- Removal methods -----------------------------
+
   /**
-   * Gets the index of the new block, then assigns the required properties,
-   * and finally sends the focus.
+   * Remove a toggle root and its nested blocks.
+   *
+   * @param {number} toggleIndex - toggle index
    */
-  setAttributesToNewBlock(entryIndex = null, foreignKey = this.wrapper.id) {
-    const index = entryIndex === null ? this.api.blocks.getCurrentBlockIndex() : entryIndex;
-    const id = uuidv4();
+  removeFullToggle(toggleIndex) {
+    const children = document.querySelectorAll(`div[foreignKey="${this.wrapper.id}"]`);
+    const { length } = children;
 
-    const newBlock = this.api.blocks.getBlockByIndex(index);
-
-    if (!this.itemsId.includes(newBlock.id)) {
-      this.itemsId.splice(index - 1, 0, newBlock.id);
-    }
-
-    const { holder } = newBlock;
-    const content = holder.firstChild;
-    const item = content.firstChild;
-
-    holder.setAttribute('foreignKey', foreignKey);
-    holder.setAttribute('id', id);
-
-    holder.classList.add('toggle-block__item');
-
-    if (!this.readOnly) {
-      holder.onkeydown = this.setEventsToNestedBlock.bind(this);
-      item.focus();
+    for (let i = toggleIndex; i < toggleIndex + length; i += 1) {
+      this.api.blocks.delete(toggleIndex);
     }
   }
 
   /**
-   * Sets the events to be listened through the holder
-   * in a nested block.
+   * Deletes the toggle structure and converts the main text and the nested blocks
+   * in regular blocks.
    *
    * @param {KeyboardEvent} e - key down event
    */
-  setEventsToNestedBlock(e) {
-    if (e.code === 'Enter') {
-      this.createParagraphFromIt();
-    } else {
-      const indexBlock = this.getCurrentBlockIndex();
-      const nestedBlock = this.getBlockByIndex(indexBlock);
-      const { holder } = nestedBlock;
+  removeToggle(e) {
+    if (e.code === 'Backspace') {
+      const { children } = this.wrapper;
+      const content = children[1].innerHTML;
 
-      if (e.code === 'Tab' && e.shiftKey) {
-        this.extractBlock(indexBlock);
-      }
-      if (e.code === 'Backspace') {
-        const cursorPosition = document.getSelection().focusOffset;
-        this.removeBlock(holder, nestedBlock.id, cursorPosition);
+      const cursorPosition = document.getSelection();
+
+      if (cursorPosition.focusOffset === 0) {
+        const index = this.api.blocks.getCurrentBlockIndex();
+        const breakLine = content.indexOf('<br>');
+        const end = breakLine === -1 ? content.length : breakLine;
+        const blocks = document.querySelectorAll(`div[foreignKey="${this.wrapper.id}"]`);
+
+        for (let i = 1; i < blocks.length + 1; i += 1) {
+          this.removeAttributesFromNewBlock(index + i);
+        }
+
+        this.api.blocks.delete(index);
+        this.api.blocks.insert('paragraph', { text: content.slice(0, end) }, {}, index, 1);
+        this.api.caret.setToBlock(index);
       }
     }
   }
@@ -248,55 +478,75 @@ export default class ToggleBlock {
     holder.classList.remove('toggle-block__item');
   }
 
+  // --------------------------------  Setter methods -----------------------------
+
   /**
-   * Creates a toggle block view without paragraphs
-   * and sets the default content.
+   * Sets the events to be listened through the holder
+   * in a nested block.
+   * @param {KeyboardEvent} e - key down event
    */
-  createToggle() {
-    this.wrapper = document.createElement('div');
-    this.wrapper.classList.add('toggle-block__selector');
-    this.wrapper.id = this.data.fk;
+  setEventsToNestedBlock(e) {
+    if (e.code === 'Enter') {
+      this.createParagraphFromIt();
+    } else {
+      const indexBlock = this.getCurrentBlockIndex();
+      const nestedBlock = this.getBlockByIndex(indexBlock);
+      const { holder } = nestedBlock;
 
-    const icon = document.createElement('span');
-    const input = document.createElement('div');
-    const defaultContent = document.createElement('div');
+      if (e.code === 'Tab' && e.shiftKey) {
+        this.extractBlock(indexBlock);
+      }
+      if (e.code === 'Backspace') {
+        const cursorPosition = document.getSelection().focusOffset;
+        this.removeBlock(holder, nestedBlock.id, cursorPosition);
+      }
+    }
+  }
 
-    icon.classList.add('toggle-block__icon');
-    icon.innerHTML = toggleIcon;
+  /**
+   * Gets the index of the new block, then assigns the required properties,
+   * and finally sends the focus.
+   */
+  setAttributesToNewBlock(entryIndex = null, foreignKey = this.wrapper.id) {
+    const index = entryIndex === null ? this.api.blocks.getCurrentBlockIndex() : entryIndex;
+    const id = uuidv4();
 
-    input.classList.add('toggle-block__input');
-    input.setAttribute('contentEditable', !this.readOnly);
-    input.innerHTML = this.data.text || '';
+    const newBlock = this.api.blocks.getBlockByIndex(index);
 
-    // Events
-    if (!this.readOnly) {
-      // Events to create other blocks and destroy the toggle
-      input.addEventListener('keyup', this.createParagraphFromToggleRoot.bind(this));
-      input.addEventListener('keydown', this.removeToggle.bind(this));
-
-      // Sets the focus at the end of the text when a nested block is deleted with the backspace key
-      input.addEventListener('focusin', () => this.setFocusToggleRootAtTheEnd());
-
-      // Establishes the placeholder for the toggle root when it's empty
-      input.addEventListener('keyup', this.setPlaceHolder.bind(this));
-      input.setAttribute('placeholder', this.placeholder);
-
-      // Calculates the number of toggle items
-      input.addEventListener('focus', this.setDefaultContent.bind(this));
-      input.addEventListener('focusout', this.setDefaultContent.bind(this));
-
-      // Event to add a block when the default content is clicked
-      defaultContent.addEventListener('click', this.clickInDefaultContent.bind(this));
-
-      input.addEventListener('focus', this.setNestedBlockAttributes.bind(this));
+    if (!this.itemsId.includes(newBlock.id)) {
+      this.itemsId.splice(index - 1, 0, newBlock.id);
     }
 
-    defaultContent.classList.add('toggle-block__content-default', 'toggle-block__hidden');
-    defaultContent.innerHTML = this.defaultContent;
+    const { holder } = newBlock;
+    const content = holder.firstChild;
+    const item = content.firstChild;
 
-    this.wrapper.appendChild(icon);
-    this.wrapper.appendChild(input);
-    this.wrapper.appendChild(defaultContent);
+    holder.setAttribute('foreignKey', foreignKey);
+    holder.setAttribute('id', id);
+
+    holder.classList.add('toggle-block__item');
+
+    if (!this.readOnly) {
+      holder.onkeydown = this.setEventsToNestedBlock.bind(this);
+      item.focus();
+    }
+  }
+
+  /**
+   * Sets the required attributes to convert an external block
+   * of the toggle into a block inside the toggle.
+   */
+  setNestedBlockAttributes() {
+    const blockIndex = this.api.blocks.getCurrentBlockIndex();
+    const block = this.api.blocks.getBlockByIndex(blockIndex);
+    const { holder } = block;
+    const willBeABlock = holder.getAttribute('will-be-a-nested-block');
+
+    if (willBeABlock) {
+      holder.removeAttribute('will-be-a-nested-block');
+      this.setAttributesToNewBlock(blockIndex);
+      this.api.toolbar.close();
+    }
   }
 
   /**
@@ -316,15 +566,6 @@ export default class ToggleBlock {
   }
 
   /**
-   * Adds the actions to do when the default content is clicked.
-   */
-  clickInDefaultContent() {
-    this.api.blocks.insert();
-    this.setAttributesToNewBlock();
-    this.setDefaultContent();
-  }
-
-  /**
    * Sets the default content. If the toggle has no other blocks inside it,
    * so sets the 'block__hidden tag' in the default content,
    * otherwise it removes it.
@@ -340,34 +581,37 @@ export default class ToggleBlock {
   }
 
   /**
-   * Deletes the toggle structure and converts the main text and the nested blocks
-   * in regular blocks.
+   * If the toggle root is empty and the key event received is 'backspace'
+   * or 'enter', its content is cleared so that the visible placeholder
+   * is set through the css.
    *
-   * @param {KeyboardEvent} e - key down event
+   * @param {KeyboardEvent} e - key up event
    */
-  removeToggle(e) {
-    if (e.code === 'Backspace') {
+  setPlaceHolder(e) {
+    if (e.code === 'Backspace' || e.code === 'Enter') {
       const { children } = this.wrapper;
-      const content = children[1].innerHTML;
+      const { length } = children[1].textContent;
 
-      const cursorPosition = document.getSelection();
-
-      if (cursorPosition.focusOffset === 0) {
-        const index = this.api.blocks.getCurrentBlockIndex();
-        const breakLine = content.indexOf('<br>');
-        const end = breakLine === -1 ? content.length : breakLine;
-        const blocks = document.querySelectorAll(`div[foreignKey="${this.wrapper.id}"]`);
-
-        for (let i = 1; i < blocks.length + 1; i += 1) {
-          this.removeAttributesFromNewBlock(index + i);
-        }
-
-        this.api.blocks.delete(index);
-        this.api.blocks.insert('paragraph', { text: content.slice(0, end) }, {}, index, 1);
-        this.api.caret.setToBlock(index);
-      }
+      if (length === 0) children[1].textContent = '';
     }
   }
+
+  /**
+   * Adds the initial status for the icon, and establishes
+   * the delay for the transition displayed when the icon
+   * is clicked.
+   */
+  setInitialTransition() {
+    const { status } = this.data;
+    const icon = this.wrapper.firstChild;
+    const svg = icon.firstChild;
+    svg.style.transition = '0.1s';
+    svg.style.transform = `rotate(${status === 'closed' ? 0 : 90}deg)`;
+  }
+
+  // ----------------------------------------- Getter methods -----------------------------------
+
+  getIndex = (target) => Array.from(target.parentNode.children).indexOf(target);
 
   /**
   * Returns the toggle's root index, given the index of one of its children
@@ -390,6 +634,281 @@ export default class ToggleBlock {
       return this.findToogleRootIndex(entryIndex - 1, fk);
     }
     return -1;
+  }
+
+  /**
+   * Returns the index of the root of the toggle which is at the same level of the toggle that it
+   * is expected to be moved
+   *
+   * fk of the toggle that is going to be moved
+   * @param {string} currentToggleFk
+   * @param {string} blockFk // fk of block which is above of the current toggle root
+   * @param {number} toggleInitialIndex // index of the root of the current toggle root
+   * @returns
+   */
+  findIndexOfParentBlock(currentToggleFk, blockFk, toggleInitialIndex) {
+    const NestedToggleChildren = this.getDecendentsNumber(blockFk);
+    const parentBlockIndex = toggleInitialIndex - (NestedToggleChildren + 1);
+    const parentBlock = this.getBlockByIndex(parentBlockIndex).holder;
+    if (parentBlock.hasAttribute('foreignKey')) {
+      const parentBlockFk = parentBlock.getAttribute('foreignKey');
+      if (parentBlockFk !== currentToggleFk) {
+        const beforeBlock = this.getBlockByIndex(parentBlockIndex - 1).holder;
+        if (beforeBlock.hasAttribute('foreignKey')) {
+          const fk = beforeBlock.getAttribute('foreignKey');
+          if (fk !== parentBlockFk) {
+            return this.findIndexOfParentBlock(currentToggleFk, fk, parentBlockIndex);
+          }
+        }
+      }
+    }
+    return parentBlockIndex;
+  }
+
+  /**
+   * Return the number of blocks inside the root Toggle
+   * @param {string} fk - The id of the root Toggle
+   */
+  getDecendentsNumber(fk) {
+    let counter = 0;
+    const listChildren = document.querySelectorAll(`div[foreignKey="${fk}"]`);
+    listChildren.forEach((child) => {
+      // Evaluate if the child is a toggle
+      if (child.hasAttribute('status')) {
+        const childId = child.querySelector('.toggle-block__selector').getAttribute('id');
+        counter += this.getDecendentsNumber(childId);
+      }
+      counter += 1;
+    });
+    return counter;
+  }
+
+  // -------------------------  Validation methods ---------------------------------
+
+  /**
+   * Checks if target is a child of a toggle
+   * @param {string} parentID id of the parent element
+   * @param {string} targetFK foreign key of the target element
+   * @returns {boolean}
+   */
+  isChild = (parentID, targetFK) => {
+    if (!parentID || !targetFK) return false; // No parent or no target
+    if (parentID === targetFK) return true; // Direct child of the toggle
+
+    return [...document.querySelectorAll(`div[foreignKey="${parentID}"]`)]
+      .some((child) => {
+        const toggle = child.querySelector('.toggle-block__selector');
+        if (!toggle) return false;
+        return this.isChild(toggle.getAttribute('id'), targetFK);
+      });
+  };
+
+  /**
+   * Validates if a block contains one of the classes to be
+   * part of a toggle. If It has it returns 'true' (It's part
+   * of a toggle), otherwise returns 'false' (It's another
+   * type of block)
+   *
+   * @param {HTMLDivElement} block - Block to be validated
+   * @returns {boolean}
+   */
+  isPartOfAToggle(block) {
+    const classes = Array.from(block.classList);
+    const answer = classes.includes('toggle-block__item') || (classes.includes('toggle-block__input') || classes.includes('toggle-block__selector'));
+
+    return answer;
+  }
+
+  /**
+   * Returns true if the div element is a toggle child, otherwise, returns false
+   * @param {HTMLDivElement} holder
+   * @returns {boolean}
+   */
+  isAToggleItem(holder) {
+    return holder.classList.contains('toggle-block__item');
+  }
+
+  /**
+   * Returns true if the div element is a toggle root, otherwise, returns false
+   * @param {HTMLDivElement} holder
+   * @returns {boolean}
+   */
+  isAToggleRoot(holder) {
+    return holder.classList.contains('toggle-block__selector') || Boolean(holder.querySelector('.toggle-block__selector'));
+  }
+
+  // ------------------------- Movement methods ---------------------------------------
+
+  addEventsMoveButtons(className, movement, options, toggleIndex) {
+    const list = options.getElementsByClassName(className);
+    if (!list.length) {
+      return;
+    }
+    const moveButton = list[0];
+    if (moveButton) {
+      moveButton.addEventListener('click', () => {
+        this.moveToggle(toggleIndex, movement);
+      });
+    }
+  }
+
+  /**
+   * Move the Toggle with all its children and nested toggles.
+   * Index of the root toggle before it is moved by editorjs core.
+   * @param {number} toggleInitialIndex
+   * @param {number} direction // 0: Move down || 1: Move up
+   */
+  moveToggle(toggleInitialIndex, direction) {
+    if (!this.readOnly) {
+      this.close();
+      const currentToggleIndex = this.getCurrentBlockIndex();
+      const decendents = this.getDecendentsNumber(this.wrapper.id);
+      const blocks = this.getBlocksCount();
+      const toggleEndIndex = toggleInitialIndex + decendents;
+
+      // Move back the root of the Toogle to its initial position
+      this.move(toggleInitialIndex, currentToggleIndex);
+
+      if (toggleInitialIndex >= 0 && toggleEndIndex <= (blocks - 1)) {
+        if (direction === 0) {
+          this.moveDown(toggleInitialIndex, toggleEndIndex);
+        } else {
+          this.moveUp(toggleInitialIndex, toggleEndIndex);
+        }
+      }
+    }
+  }
+
+  /**
+   * Move down the whole current toggle to the next corresponding position
+   * @param {number} toggleInitialIndex // index of the root of the current toggle
+   * @param {number} toggleEndIndex // index of the last child of the current toggle
+   */
+  moveDown(toggleInitialIndex, toggleEndIndex) {
+    const blockAfterToggleIndex = toggleEndIndex + 1;
+    const blockAfterToggle = this.getBlockByIndex(blockAfterToggleIndex);
+    const { holder } = blockAfterToggle;
+
+    this.move(toggleInitialIndex, blockAfterToggleIndex);
+
+    // Evaluate if the block is a toggle to move its children
+    if (blockAfterToggle.name === 'toggle') {
+      const id = holder.querySelector('.toggle-block__selector').getAttribute('id');
+      const children = this.getDecendentsNumber(id);
+      this.moveDecendents(children, toggleInitialIndex + 1, blockAfterToggleIndex + 1, 0);
+    }
+  }
+
+  /**
+   * Move up the whole current toggle to the next corresponding position
+   * @param {number} toggleInitialIndex // index of the root of the current toggle
+   * @param {number} toggleEndIndex // index of the last child of the current toggle
+   */
+  moveUp(toggleInitialIndex, toggleEndIndex) {
+    const blockBeforeToggleIndex = toggleInitialIndex - 1;
+    const blockBeforeToggle = this.getBlockByIndex(blockBeforeToggleIndex);
+    if (blockBeforeToggle.name === 'toggle') {
+      return;
+    }
+    const { holder } = blockBeforeToggle;
+    // Evaluate if the block is an item of a toggle to move the whole parent toggle
+    if (holder.hasAttribute('foreignKey')) {
+      const currentToggle = this.getBlockByIndex(toggleInitialIndex).holder;
+      const currentToggleFk = currentToggle.getAttribute('foreignKey');
+      const fk = holder.getAttribute('foreignKey');
+      if (fk !== currentToggleFk) {
+        const parentBlockIdx = this.findIndexOfParentBlock(currentToggleFk, fk, toggleInitialIndex);
+        const parentBlock = this.getBlockByIndex(parentBlockIdx).holder;
+        const id = parentBlock.querySelector('.toggle-block__selector').getAttribute('id');
+        const children = this.getDecendentsNumber(id);
+        this.move(toggleEndIndex, parentBlockIdx);
+        this.moveDecendents(children, toggleEndIndex, parentBlockIdx, 1);
+        return;
+      }
+    }
+    this.move(toggleEndIndex, blockBeforeToggleIndex);
+  }
+
+  /**
+   * Move all the children of the toggle that is being moved
+   * @param {number} children // Number of children of the current toggle
+   * @param {number} finalIndex // index to calculate where children are going to be moved
+   * @param {number} parentInitialIndex // index to calculate where the children are
+   * @param {number} direction // 0: to move from top to bottom || 1: to move from bottom to the top
+   */
+  moveDecendents(children, finalIndex, parentInitialIndex, direction) {
+    let childrenCurrentPosition = parentInitialIndex;
+    let childrenFinalPosition = finalIndex;
+    while (children) {
+      this.move(childrenFinalPosition, childrenCurrentPosition);
+      if (direction === 0) {
+        childrenCurrentPosition += 1;
+        childrenFinalPosition += 1;
+      }
+      children -= 1;
+    }
+  }
+
+  moveChildren(endBlock, fk = this.wrapper.id) {
+    // Get the children of the dropped toggle
+    let children = document.querySelectorAll(`div[foreignKey="${fk}"]`);
+
+    // Move all the children to the parent position
+    children = this.startBlock >= endBlock ? [...children].reverse() : children;
+    children.forEach((child) => {
+      const childIndex = this.getIndex(child);
+      this.api.blocks.move(endBlock, childIndex);
+
+      // If this child is a toggle we have to move his children too
+      const toggles = child.querySelectorAll('.toggle-block__selector');
+      const isToggle = toggles.length > 0;
+      if (isToggle) {
+        const toggleIndex = this.getIndex(child);
+        const fix = this.startBlock < endBlock ? 0 : 1;
+        toggles.forEach((toggle) => this.moveChildren(toggleIndex + fix, toggle.getAttribute('id')));
+
+        const dif = Math.abs(endBlock - toggleIndex);
+        endBlock = this.startBlock < endBlock ? endBlock + dif : endBlock - dif;
+      }
+    });
+  }
+
+  // ----------------------------- Helper methods -----------------------------------------------
+
+  /**
+   * Restores the item attributes to nested blocks.
+   *
+   * @param {HTMLDivElement} mutation - Html element removed or inserted
+   */
+  restoreItemAttributes(mutation) {
+    if (this.wrapper !== undefined) {
+      const index = this.api.blocks.getCurrentBlockIndex();
+      const block = this.api.blocks.getBlockByIndex(index);
+      const { holder } = block;
+      const currentBlockValidation = !this.isPartOfAToggle(holder);
+      const mutatedBlock = mutation.removedNodes[0];
+
+      if (this.itemsId.includes(block.id) && currentBlockValidation) {
+        this.setAttributesToNewBlock(index);
+      } else if (mutatedBlock && this.isPartOfAToggle(mutatedBlock) && currentBlockValidation) {
+        const blockCover = holder.firstChild;
+        const blockContainer = blockCover.firstChild;
+
+        if (!this.isPartOfAToggle(blockContainer)) {
+          this.setAttributesToNewBlock(index);
+          this.itemsId[index] = block.id;
+        }
+      }
+    }
+  }
+
+  /**
+   * Adds the actions to do when the default content is clicked.
+   */
+  clickInDefaultContent() {
+    this.api.blocks.insert();
+    this.setAttributesToNewBlock();
+    this.setDefaultContent();
   }
 
   /**
@@ -416,54 +935,6 @@ export default class ToggleBlock {
     }
     this.api.caret.setToBlock(entryIndex);
     this.api.toolbar.close();
-  }
-
-  /**
-   * If the toggle root is empty and the key event received is 'backspace'
-   * or 'enter', its content is cleared so that the visible placeholder
-   * is set through the css.
-   *
-   * @param {KeyboardEvent} e - key up event
-   */
-  setPlaceHolder(e) {
-    if (e.code === 'Backspace' || e.code === 'Enter') {
-      const { children } = this.wrapper;
-      const { length } = children[1].textContent;
-
-      if (length === 0) children[1].textContent = '';
-    }
-  }
-
-  /**
-   * Renders Tool's view.
-   * First renders the toggle root, and immediately
-   * renders its items as new blocks under the root.
-   *
-   * @returns {HTMLDivElement}
-   */
-  render() {
-    this.createToggle();
-
-    // Renders the nested blocks after the toggle root is rendered
-    setTimeout(() => this.renderItems());
-
-    // Adds initial transition for the icon
-    setTimeout(() => this.setInitialTransition());
-
-    return this.wrapper;
-  }
-
-  /**
-   * Adds the initial status for the icon, and establishes
-   * the delay for the transition displayed when the icon
-   * is clicked.
-   */
-  setInitialTransition() {
-    const { status } = this.data;
-    const icon = this.wrapper.firstChild;
-    const svg = icon.firstChild;
-    svg.style.transition = '0.1s';
-    svg.style.transform = `rotate(${status === 'closed' ? 0 : 90}deg)`;
   }
 
   /**
@@ -590,40 +1061,6 @@ export default class ToggleBlock {
   }
 
   /**
-   * Extracts Tool's data from the view
-   * @param {HTMLDivElement} blockContent - Toggle tools rendered view
-   * @returns {ToggleBlockData} - saved data
-   */
-  save(blockContent) {
-    const { children } = blockContent;
-    const caption = children[1].innerHTML;
-    const blocks = document.querySelectorAll(`div[foreignKey="${this.wrapper.id}"]`);
-
-    return Object.assign(this.data, {
-      text: caption,
-      items: blocks.length,
-    });
-  }
-
-  /**
-   * Return the number of blocks inside the root Toggle
-   * @param {string} fk - The id of the root Toggle
-   */
-  getDecendentsNumber(fk) {
-    let counter = 0;
-    const listChildren = document.querySelectorAll(`div[foreignKey="${fk}"]`);
-    listChildren.forEach((child) => {
-      // Evaluate if the child is a toggle
-      if (child.hasAttribute('status')) {
-        const childId = child.querySelector('.toggle-block__selector').getAttribute('id');
-        counter += this.getDecendentsNumber(childId);
-      }
-      counter += 1;
-    });
-    return counter;
-  }
-
-  /**
    * Highlight the blocks that belongs to the Toggle
    * @param {string} fk - The id of the root Toggle
    */
@@ -637,408 +1074,6 @@ export default class ToggleBlock {
         this.highlightToggleItems(childId);
       }
     });
-  }
-
-  /**
-   * Adds events for the move up, move down and delete options in the toolbar
-   */
-  renderSettings() {
-    const settingsBar = document.getElementsByClassName('ce-settings--opened');
-    const optionsContainer = settingsBar[0];
-    const options = optionsContainer.lastChild;
-    const toggleIndex = this.api.blocks.getCurrentBlockIndex();
-
-    this.highlightToggleItems(this.wrapper.id);
-
-    setTimeout(() => {
-      this.addEventsMoveButtons('ce-tune-move-down', 0, options, toggleIndex);
-      this.addEventsMoveButtons('ce-tune-move-up', 1, options, toggleIndex);
-
-      const deleteButton = options.getElementsByClassName('ce-settings__button--delete')[0];
-      if (deleteButton) {
-        deleteButton.addEventListener('click', () => {
-          const classesList = deleteButton.classList;
-          const classes = Object.values(classesList);
-
-          if (classes.indexOf('clicked-to-destroy-toggle') === -1) {
-            deleteButton.classList.add('clicked-to-destroy-toggle');
-          } else {
-            this.removeFullToggle(toggleIndex);
-          }
-        });
-      }
-    });
-  }
-
-  addEventsMoveButtons(className, movement, options, toggleIndex) {
-    const list = options.getElementsByClassName(className);
-    if (!list.length) {
-      return;
-    }
-    const moveButton = list[0];
-    if (moveButton) {
-      moveButton.addEventListener('click', () => {
-        this.moveToggle(toggleIndex, movement);
-      });
-    }
-  }
-
-  /**
-   * Move the Toggle with all its children and nested toggles.
-   * Index of the root toggle before it is moved by editorjs core.
-   * @param {number} toggleInitialIndex
-   * @param {number} direction // 0: Move down || 1: Move up
-   */
-  moveToggle(toggleInitialIndex, direction) {
-    if (!this.readOnly) {
-      this.close();
-      const currentToggleIndex = this.getCurrentBlockIndex();
-      const decendents = this.getDecendentsNumber(this.wrapper.id);
-      const blocks = this.getBlocksCount();
-      const toggleEndIndex = toggleInitialIndex + decendents;
-
-      // Move back the root of the Toogle to its initial position
-      this.move(toggleInitialIndex, currentToggleIndex);
-
-      if (toggleInitialIndex >= 0 && toggleEndIndex <= (blocks - 1)) {
-        if (direction === 0) {
-          this.moveDown(toggleInitialIndex, toggleEndIndex);
-        } else {
-          this.moveUp(toggleInitialIndex, toggleEndIndex);
-        }
-      }
-    }
-  }
-
-  /**
-   * Move down the whole current toggle to the next corresponding position
-   * @param {number} toggleInitialIndex // index of the root of the current toggle
-   * @param {number} toggleEndIndex // index of the last child of the current toggle
-   */
-  moveDown(toggleInitialIndex, toggleEndIndex) {
-    const blockAfterToggleIndex = toggleEndIndex + 1;
-    const blockAfterToggle = this.getBlockByIndex(blockAfterToggleIndex);
-    const { holder } = blockAfterToggle;
-
-    this.move(toggleInitialIndex, blockAfterToggleIndex);
-
-    // Evaluate if the block is a toggle to move its children
-    if (blockAfterToggle.name === 'toggle') {
-      const id = holder.querySelector('.toggle-block__selector').getAttribute('id');
-      const children = this.getDecendentsNumber(id);
-      this.moveDecendents(children, toggleInitialIndex + 1, blockAfterToggleIndex + 1, 0);
-    }
-  }
-
-  /**
-   * Move up the whole current toggle to the next corresponding position
-   * @param {number} toggleInitialIndex // index of the root of the current toggle
-   * @param {number} toggleEndIndex // index of the last child of the current toggle
-   */
-  moveUp(toggleInitialIndex, toggleEndIndex) {
-    const blockBeforeToggleIndex = toggleInitialIndex - 1;
-    const blockBeforeToggle = this.getBlockByIndex(blockBeforeToggleIndex);
-    if (blockBeforeToggle.name === 'toggle') {
-      return;
-    }
-    const { holder } = blockBeforeToggle;
-    // Evaluate if the block is an item of a toggle to move the whole parent toggle
-    if (holder.hasAttribute('foreignKey')) {
-      const currentToggle = this.getBlockByIndex(toggleInitialIndex).holder;
-      const currentToggleFk = currentToggle.getAttribute('foreignKey');
-      const fk = holder.getAttribute('foreignKey');
-      if (fk !== currentToggleFk) {
-        const parentBlockIdx = this.findIndexOfParentBlock(currentToggleFk, fk, toggleInitialIndex);
-        const parentBlock = this.getBlockByIndex(parentBlockIdx).holder;
-        const id = parentBlock.querySelector('.toggle-block__selector').getAttribute('id');
-        const children = this.getDecendentsNumber(id);
-        this.move(toggleEndIndex, parentBlockIdx);
-        this.moveDecendents(children, toggleEndIndex, parentBlockIdx, 1);
-        return;
-      }
-    }
-    this.move(toggleEndIndex, blockBeforeToggleIndex);
-  }
-
-  /**
-   * Returns the index of the root of the toggle which is at the same level of the toggle that it
-   * is expected to be moved
-   *
-   * fk of the toggle that is going to be moved
-   * @param {string} currentToggleFk
-   * @param {string} blockFk // fk of block which is above of the current toggle root
-   * @param {number} toggleInitialIndex // index of the root of the current toggle root
-   * @returns
-   */
-  findIndexOfParentBlock(currentToggleFk, blockFk, toggleInitialIndex) {
-    const NestedToggleChildren = this.getDecendentsNumber(blockFk);
-    const parentBlockIndex = toggleInitialIndex - (NestedToggleChildren + 1);
-    const parentBlock = this.getBlockByIndex(parentBlockIndex).holder;
-    if (parentBlock.hasAttribute('foreignKey')) {
-      const parentBlockFk = parentBlock.getAttribute('foreignKey');
-      if (parentBlockFk !== currentToggleFk) {
-        const beforeBlock = this.getBlockByIndex(parentBlockIndex - 1).holder;
-        if (beforeBlock.hasAttribute('foreignKey')) {
-          const fk = beforeBlock.getAttribute('foreignKey');
-          if (fk !== parentBlockFk) {
-            return this.findIndexOfParentBlock(currentToggleFk, fk, parentBlockIndex);
-          }
-        }
-      }
-    }
-    return parentBlockIndex;
-  }
-
-  /**
-   * Move all the children of the toggle that is being moved
-   * @param {number} children // Number of children of the current toggle
-   * @param {number} finalIndex // index to calculate where children are going to be moved
-   * @param {number} parentInitialIndex // index to calculate where the children are
-   * @param {number} direction // 0: to move from top to bottom || 1: to move from bottom to the top
-   */
-  moveDecendents(children, finalIndex, parentInitialIndex, direction) {
-    let childrenCurrentPosition = parentInitialIndex;
-    let childrenFinalPosition = finalIndex;
-    while (children) {
-      this.move(childrenFinalPosition, childrenCurrentPosition);
-      if (direction === 0) {
-        childrenCurrentPosition += 1;
-        childrenFinalPosition += 1;
-      }
-      children -= 1;
-    }
-  }
-
-  /**
-   * Removes a toggle root and its nested blocks.
-   *
-   * @param {number} toggleIndex - toggle index
-   */
-  removeFullToggle(toggleIndex) {
-    const children = document.querySelectorAll(`div[foreignKey="${this.wrapper.id}"]`);
-    const { length } = children;
-
-    for (let i = toggleIndex; i < toggleIndex + length; i += 1) {
-      this.api.blocks.delete(toggleIndex);
-    }
-  }
-
-  /**
-   * Adds the required listeners to call the toggle shortcuts
-   * on the editor.
-   */
-  addListeners() {
-    if (!this.readOnly) {
-      const redactor = document.activeElement;
-      redactor.addEventListener('keyup', (e) => {
-        const blockContainer = document.activeElement;
-        const currentBlock = this.api.blocks.getCurrentBlockIndex();
-
-        const blockCover = blockContainer.parentElement;
-        const block = blockCover.parentElement;
-
-        if (e.code === 'Space') {
-          this.createToggleWithShortcut(blockContainer);
-        } else if (currentBlock > 0 && !(this.isPartOfAToggle(blockContainer) || this.isPartOfAToggle(block)) && e.code === 'Tab') {
-          this.nestBlock(blockContainer);
-        }
-      });
-    }
-  }
-
-  /**
-   * Adds mutation observer to restore the item attributes
-   * when the undo action is executed and they're lost.
-   */
-  addSupportForUndoAndRedoActions() {
-    if (!this.readOnly) {
-      const target = document.querySelector('div.codex-editor__redactor');
-
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-          if (mutation.type === 'childList') {
-            setTimeout(this.restoreItemAttributes.bind(this, mutation));
-          }
-        });
-      });
-
-      const config = { attributes: true, childList: true, characterData: true };
-
-      observer.observe(target, config);
-    }
-  }
-
-  getIndex = (target) => Array.from(target.parentNode.children).indexOf(target);
-
-  /**
-   * Checks if target is a child of a toggle
-   * @param {string} parentID id of the parent element
-   * @param {string} targetFK foreign key of the target element
-   * @returns {boolean}
-   */
-  isChild = (parentID, targetFK) => {
-    if (!parentID || !targetFK) return false; // No parent or no target
-    if (parentID === targetFK) return true; // Direct child of the toggle
-
-    return [...document.querySelectorAll(`div[foreignKey="${parentID}"]`)]
-      .some((child) => {
-        const toggle = child.querySelector('.toggle-block__selector');
-        if (!toggle) return false;
-        return this.isChild(toggle.getAttribute('id'), targetFK);
-      });
-  };
-
-  /**
-   * Adds drop listener to move the childs item
-   * when the drag and drop action is executed.
-   */
-  addSupportForDragAndDropActions() {
-    if (!this.readOnly) {
-      if (this.wrapper === undefined) {
-        setTimeout(() => this.addSupportForDragAndDropActions(), 250);
-        return;
-      }
-
-      // Set status in attribute to a proper hide and show
-      const toggleBlock = document.querySelector(`#${this.wrapper.id}`).parentNode.parentNode;
-      toggleBlock.setAttribute('status', this.data.status);
-
-      const settingsButton = document.querySelector('.ce-toolbar__settings-btn');
-      settingsButton.setAttribute('draggable', 'true');
-      settingsButton.addEventListener('dragstart', () => {
-        this.startBlock = this.api.blocks.getCurrentBlockIndex();
-        this.nameDragged = this.api.blocks.getBlockByIndex(this.startBlock).name;
-        this.holderDragged = this.api.blocks.getBlockByIndex(this.startBlock).holder;
-      });
-
-      document.addEventListener('drop', (event) => {
-        // Get the position when item was dropped
-        const { target } = event;
-        if (document.contains(target)) {
-          const dropTarget = target.classList.contains('ce-block') ? target : target.closest('.ce-block');
-          if (dropTarget && dropTarget !== this.holderDragged) {
-            let endBlock = this.getIndex(dropTarget);
-
-            // Control the toggle's children will be positioned down of the parent
-            endBlock = this.startBlock < endBlock ? endBlock + 1 : endBlock;
-
-            // Check if the item dropped is another toggle
-            const isTargetAToggle = dropTarget.querySelectorAll('.toggle-block__selector').length > 0
-              || dropTarget.getAttribute('foreignKey') !== null;
-
-            setTimeout(() => {
-              // Verify if the item droped is the toggle
-              if (this.nameDragged === 'toggle') {
-                // Verify if the toggle dropped is the same of this eventListener
-                const currentToggleDropped = this.holderDragged.querySelector(`#${this.wrapper.id}`);
-
-                if (currentToggleDropped) {
-                  // Check if the toggle dropped was not droppen in its children
-                  if (!this.isChild(currentToggleDropped.getAttribute('id'), dropTarget.getAttribute('foreignKey'))) {
-                    // If is a toggle we have to add the attributes to make it a part of the toggle
-                    if (isTargetAToggle) {
-                      const foreignKey = dropTarget.getAttribute('foreignKey')
-                        ?? dropTarget.querySelector('.toggle-block__selector').getAttribute('id');
-
-                      const newToggleIndex = this.getIndex(this.holderDragged);
-                      this.setAttributesToNewBlock(newToggleIndex, foreignKey);
-                    }
-
-                    this.moveChildren(endBlock);
-                  } else {
-                    // If we are dropping in the toggle children,
-                    // we have to move the toggle in the original position
-                    if (this.startBlock === endBlock) {
-                      this.api.blocks.move(this.startBlock + 1, endBlock);
-                    } else {
-                      this.api.blocks.move(this.startBlock, endBlock);
-                    }
-
-                    // And remove the attributes
-                    if (!isTargetAToggle) {
-                      const newToggleIndex = this.getIndex(this.holderDragged);
-                      this.removeAttributesFromNewBlock(newToggleIndex);
-                    }
-                  }
-                }
-              }
-
-              // If we are dropping out of a toggle we have to remove the attributes
-              if (!isTargetAToggle) {
-                const newToggleIndex = this.getIndex(this.holderDragged);
-                this.removeAttributesFromNewBlock(newToggleIndex);
-              }
-            });
-          }
-        }
-      });
-    }
-  }
-
-  moveChildren(endBlock, fk = this.wrapper.id) {
-    // Get the children of the dropped toggle
-    let children = document.querySelectorAll(`div[foreignKey="${fk}"]`);
-
-    // Move all the children to the parent position
-    children = this.startBlock >= endBlock ? [...children].reverse() : children;
-    children.forEach((child) => {
-      const childIndex = this.getIndex(child);
-      this.api.blocks.move(endBlock, childIndex);
-
-      // If this child is a toggle we have to move his children too
-      const toggles = child.querySelectorAll('.toggle-block__selector');
-      const isToggle = toggles.length > 0;
-      if (isToggle) {
-        const toggleIndex = this.getIndex(child);
-        const fix = this.startBlock < endBlock ? 0 : 1;
-        toggles.forEach((toggle) => this.moveChildren(toggleIndex + fix, toggle.getAttribute('id')));
-
-        const dif = Math.abs(endBlock - toggleIndex);
-        endBlock = this.startBlock < endBlock ? endBlock + dif : endBlock - dif;
-      }
-    });
-  }
-
-  /**
-   * Restores the item attributes to nested blocks.
-   *
-   * @param {HTMLDivElement} mutation - Html element removed or inserted
-   */
-  restoreItemAttributes(mutation) {
-    if (this.wrapper !== undefined) {
-      const index = this.api.blocks.getCurrentBlockIndex();
-      const block = this.api.blocks.getBlockByIndex(index);
-      const { holder } = block;
-      const currentBlockValidation = !this.isPartOfAToggle(holder);
-      const mutatedBlock = mutation.removedNodes[0];
-
-      if (this.itemsId.includes(block.id) && currentBlockValidation) {
-        this.setAttributesToNewBlock(index);
-      } else if (mutatedBlock && this.isPartOfAToggle(mutatedBlock) && currentBlockValidation) {
-        const blockCover = holder.firstChild;
-        const blockContainer = blockCover.firstChild;
-
-        if (!this.isPartOfAToggle(blockContainer)) {
-          this.setAttributesToNewBlock(index);
-          this.itemsId[index] = block.id;
-        }
-      }
-    }
-  }
-
-  /**
-   * Creates a toggle through the '>' char and the 'Space' key
-   */
-  createToggleWithShortcut(blockContainer) {
-    const content = blockContainer.textContent;
-
-    if ((content[0] === '>') && !this.isPartOfAToggle(blockContainer)) {
-      const blockCaller = this.api.blocks.getCurrentBlockIndex();
-
-      this.api.blocks.insert('toggle', { text: content.slice(2) }, this.api, blockCaller, true);
-      this.api.blocks.delete(blockCaller + 1);
-      this.api.caret.setToBlock(blockCaller);
-    }
   }
 
   /**
@@ -1062,38 +1097,5 @@ export default class ToggleBlock {
       const toggleRoot = document.getElementById(foreignKey);
       toggleRoot.children[1].focus();
     }
-  }
-
-  /**
-  * Sets the required attributes to convert an external block
-  * of the toggle into a block inside the toggle.
-   */
-  setNestedBlockAttributes() {
-    const blockIndex = this.api.blocks.getCurrentBlockIndex();
-    const block = this.api.blocks.getBlockByIndex(blockIndex);
-    const { holder } = block;
-    const willBeABlock = holder.getAttribute('will-be-a-nested-block');
-
-    if (willBeABlock) {
-      holder.removeAttribute('will-be-a-nested-block');
-      this.setAttributesToNewBlock(blockIndex);
-      this.api.toolbar.close();
-    }
-  }
-
-  /**
-   * Validates if a block contains one of the classes to be
-   * part of a toggle. If It has it returns 'true' (It's part
-   * of a toggle), otherwise returns 'false' (It's another
-   * type of block)
-   *
-   * @param {HTMLDivElement} block - Block to be validated
-   * @returns {boolean}
-   */
-  isPartOfAToggle(block) {
-    const classes = Array.from(block.classList);
-    const answer = classes.includes('toggle-block__item') || (classes.includes('toggle-block__input') || classes.includes('toggle-block__selector'));
-
-    return answer;
   }
 }
