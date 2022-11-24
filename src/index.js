@@ -54,7 +54,7 @@ export default class ToggleBlock {
     this.readOnly = readOnly || false;
     this.placeholder = config?.placeholder ?? 'Toggle';
     this.defaultContent = config?.defaultContent ?? 'Empty toggle. Click or drop blocks inside.';
-    this.addListeners();
+    this.addListener();
     this.addSupportForUndoAndRedoActions();
     this.addSupportForDragAndDropActions();
   }
@@ -93,14 +93,14 @@ export default class ToggleBlock {
    * @returns {HTMLDivElement}
    */
   render() {
+    const index = this.getCurrentBlockIndex();
+    const { holder } = this.getBlockByIndex(index);
     this.createToggle();
-
-    // Renders the nested blocks after the toggle root is rendered
-    setTimeout(() => this.renderItems());
-
-    // Adds initial transition for the icon
-    setTimeout(() => this.setInitialTransition());
-
+    setTimeout(() => {
+      this.renderItems();
+      this.setInitialIconTransition();
+      if (this.isAToggleItem(holder)) { this.nestBlock(index); }
+    });
     return this.wrapper;
   }
 
@@ -156,21 +156,17 @@ export default class ToggleBlock {
   /**
    * Capture space key event to create a Toggle root or the Tab key event to nest a block
    */
-  addListeners() {
+  addListener() {
     if (!this.readOnly) {
-      const redactor = document.activeElement;
+      const redactor = document.body.querySelector('.codex-editor__redactor');
       redactor.addEventListener('keyup', (e) => {
-        const blockContainer = document.activeElement;
-        const currentBlock = this.api.blocks.getCurrentBlockIndex();
+        const currentIndex = this.getCurrentBlockIndex();
+        const { holder } = this.getBlockByIndex(currentIndex);
 
-        const blockCover = blockContainer.parentElement;
-        const block = blockCover.parentElement;
-
-        if (e.code === 'Space') {
-          this.createToggleWithShortcut(blockContainer);
-        } else if (currentBlock > 0 && !(this.isPartOfAToggle(blockContainer) || this.isPartOfAToggle(block)) && e.code === 'Tab') {
-          this.nestBlock(blockContainer);
+        if (e.code === 'Space' && !this.isAToggleRoot(holder)) {
+          this.createToggleRootWithShortcut(currentIndex, holder);
         }
+        if (e.code === 'Tab') { this.nestBlock(currentIndex); }
       });
     }
   }
@@ -289,7 +285,7 @@ export default class ToggleBlock {
    */
   createToggle() {
     this.wrapper = document.createElement('div');
-    this.wrapper.classList.add('toggle-block__selector');
+    this.wrapper.classList.add('toggle-block__selector', 'cdx-block');
     this.wrapper.id = this.data.fk;
 
     const icon = document.createElement('span');
@@ -322,8 +318,6 @@ export default class ToggleBlock {
 
       // Event to add a block when the default content is clicked
       defaultContent.addEventListener('click', this.clickInDefaultContent.bind(this));
-
-      input.addEventListener('focus', this.setNestedBlockAttributes.bind(this));
     }
 
     defaultContent.classList.add('toggle-block__content-default', 'toggle-block__hidden');
@@ -335,17 +329,18 @@ export default class ToggleBlock {
   }
 
   /**
-   * Create a toggle using the '>' char and then pressing the 'Space' key
+   * Create a toggle using the '>' char and the 'Space' key
+   * @param {number} index - Block index where the toggle root will be created.
+   * @param {HTMLDivElement} holder
    */
-  createToggleWithShortcut(blockContainer) {
-    const content = blockContainer.textContent;
+  createToggleRootWithShortcut(index, holder) {
+    const content = holder.textContent;
 
-    if ((content[0] === '>') && !this.isPartOfAToggle(blockContainer)) {
-      const blockCaller = this.api.blocks.getCurrentBlockIndex();
-
-      this.api.blocks.insert('toggle', { text: content.slice(2) }, this.api, blockCaller, true);
-      this.api.blocks.delete(blockCaller + 1);
-      this.api.caret.setToBlock(blockCaller);
+    // Convert current paragraph block into a toggle root
+    if ((content[0] === '>')) {
+      this.api.blocks.insert('toggle', { text: content.substring(2) }, this.api, index, true);
+      this.api.blocks.delete(index + 1);
+      this.api.caret.setToBlock(index);
     }
   }
 
@@ -377,13 +372,6 @@ export default class ToggleBlock {
       this.api.blocks.insert('paragraph', { text: newText }, {}, originalIndex + 1, 1);
       this.setAttributesToNewBlock();
     }
-  }
-
-  /**
-   * Calls the method to add the required properties to the new block.
-   */
-  createParagraphFromIt() {
-    this.setAttributesToNewBlock();
   }
 
   // ------------------------------- Removal methods -----------------------------
@@ -481,25 +469,23 @@ export default class ToggleBlock {
   // --------------------------------  Setter methods -----------------------------
 
   /**
-   * Sets the events to be listened through the holder
-   * in a nested block.
+   * Capture events on children blocks:
+   * * Enter       = To create a new Toggle child
+   * * Shift + Tab = To extract the block form the Toggle
+   * * Backspace   = To delete the child block
    * @param {KeyboardEvent} e - key down event
    */
   setEventsToNestedBlock(e) {
-    if (e.code === 'Enter') {
-      this.createParagraphFromIt();
-    } else {
-      const indexBlock = this.getCurrentBlockIndex();
-      const nestedBlock = this.getBlockByIndex(indexBlock);
-      const { holder } = nestedBlock;
+    const index = this.getCurrentBlockIndex();
+    const block = this.getBlockByIndex(index);
 
-      if (e.code === 'Tab' && e.shiftKey) {
-        this.extractBlock(indexBlock);
-      }
-      if (e.code === 'Backspace') {
-        const cursorPosition = document.getSelection().focusOffset;
-        this.removeBlock(holder, nestedBlock.id, cursorPosition);
-      }
+    if (e.code === 'Enter' && !this.isAToggleRoot(block.holder)) {
+      this.setAttributesToNewBlock();
+    }
+    if (e.code === 'Tab' && e.shiftKey) { this.extractBlock(index); }
+    if (e.code === 'Backspace') {
+      const cursorPosition = document.getSelection().focusOffset;
+      this.removeBlock(block.holder, block.id, cursorPosition);
     }
   }
 
@@ -508,44 +494,21 @@ export default class ToggleBlock {
    * and finally sends the focus.
    */
   setAttributesToNewBlock(entryIndex = null, foreignKey = this.wrapper.id) {
-    const index = entryIndex === null ? this.api.blocks.getCurrentBlockIndex() : entryIndex;
-    const id = uuidv4();
-
-    const newBlock = this.api.blocks.getBlockByIndex(index);
-
-    if (!this.itemsId.includes(newBlock.id)) {
-      this.itemsId.splice(index - 1, 0, newBlock.id);
-    }
-
+    const index = entryIndex === null ? this.getCurrentBlockIndex() : entryIndex;
+    const newBlock = this.getBlockByIndex(index);
     const { holder } = newBlock;
-    const content = holder.firstChild;
-    const item = content.firstChild;
 
     holder.setAttribute('foreignKey', foreignKey);
-    holder.setAttribute('id', id);
-
+    holder.setAttribute('id', uuidv4());
     holder.classList.add('toggle-block__item');
 
     if (!this.readOnly) {
       holder.onkeydown = this.setEventsToNestedBlock.bind(this);
-      item.focus();
+      holder.querySelector('.cdx-block').focus();
     }
-  }
 
-  /**
-   * Sets the required attributes to convert an external block
-   * of the toggle into a block inside the toggle.
-   */
-  setNestedBlockAttributes() {
-    const blockIndex = this.api.blocks.getCurrentBlockIndex();
-    const block = this.api.blocks.getBlockByIndex(blockIndex);
-    const { holder } = block;
-    const willBeABlock = holder.getAttribute('will-be-a-nested-block');
-
-    if (willBeABlock) {
-      holder.removeAttribute('will-be-a-nested-block');
-      this.setAttributesToNewBlock(blockIndex);
-      this.api.toolbar.close();
+    if (!this.itemsId.includes(newBlock.id)) {
+      this.itemsId.splice(index - 1, 0, newBlock.id);
     }
   }
 
@@ -597,13 +560,11 @@ export default class ToggleBlock {
   }
 
   /**
-   * Adds the initial status for the icon, and establishes
-   * the delay for the transition displayed when the icon
-   * is clicked.
+   * Display the Toggle's icon according its state
    */
-  setInitialTransition() {
+  setInitialIconTransition() {
     const { status } = this.data;
-    const icon = this.wrapper.firstChild;
+    const icon = this.wrapper.querySelector('.toggle-block__icon');
     const svg = icon.firstChild;
     svg.style.transition = '0.1s';
     svg.style.transform = `rotate(${status === 'closed' ? 0 : 90}deg)`;
@@ -614,10 +575,28 @@ export default class ToggleBlock {
   getIndex = (target) => Array.from(target.parentNode.children).indexOf(target);
 
   /**
-  * Returns the toggle's root index, given the index of one of its children
+   * Return the Toggle root id, given the index of a Toggle's child or Toggle's root.
+   * @param {number} index - Block index
+   * @returns {String} foreignKey - The Toggle parent id
+   */
+  getToggleId(index) {
+    const { holder } = this.getBlockByIndex(index);
+    let foreignKey;
+    if (this.isAToggleRoot(holder)) {
+      const toggle = holder.querySelector('.toggle-block__selector');
+      foreignKey = toggle.getAttribute('id');
+    }
+    if (this.isAToggleItem(holder)) {
+      foreignKey = holder.getAttribute('foreignKey');
+    }
+    return foreignKey;
+  }
+
+  /**
+  * Return the toggle's root index, given the index of one of its children
   *
   * @param {number} entryIndex - block index
-  * @param {String} fk - The block's foreign key
+  * @param {String} fk - The block's foreign key (Toggle root id)
   * @returns {number} The Toggle's root index
   */
   findToogleRootIndex(entryIndex, fk) {
@@ -1077,25 +1056,15 @@ export default class ToggleBlock {
   }
 
   /**
-   * Nests a block inside a toggle through the 'Tab' key
+   * Nest a block inside a toggle
+   * @param {number} currentIndex - Block index to be nested
    */
-  nestBlock(blockContainer) {
-    const blockCover = blockContainer.parentElement;
-    const block = blockCover.parentElement;
-
-    const previousBlock = block.previousElementSibling;
-    const previousCover = previousBlock.firstChild;
-    const previousContainer = previousCover.firstChild;
-
-    if (this.isPartOfAToggle(previousContainer) || this.isPartOfAToggle(previousBlock)) {
-      const foreignId = previousBlock.getAttribute('foreignKey');
-      const toggleId = previousContainer.getAttribute('id');
-      const foreignKey = foreignId || toggleId;
-
-      block.setAttribute('will-be-a-nested-block', true);
-
-      const toggleRoot = document.getElementById(foreignKey);
-      toggleRoot.children[1].focus();
+  nestBlock(currentIndex) {
+    if (currentIndex - 1 >= 0) {
+      const foreignKey = this.getToggleId(currentIndex - 1);
+      if (foreignKey) {
+        this.setAttributesToNewBlock(currentIndex, foreignKey);
+      }
     }
   }
 }
