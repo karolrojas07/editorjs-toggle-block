@@ -71,6 +71,7 @@ export function createToggleRoot(toggleBlock) {
   parentBlock.classList.add('ce-block');
 
   parentBlock.setAttribute('status', toggleBlock.data.status);
+  parentBlock.setAttribute('level', toggleBlock.data.level);
 
   parentBlock.appendChild(content);
 

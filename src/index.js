@@ -31,6 +31,7 @@ export default class ToggleBlock {
       status: data.status || 'open',
       fk: data.fk || `fk-${uuidv4()}`,
       items: data.items || 0,
+      with_shortcut: data.with_shortcut || false,
     };
     this.itemsId = [];
     this.api = api;
@@ -94,12 +95,22 @@ export default class ToggleBlock {
    */
   render() {
     const index = this.getCurrentBlockIndex();
-    const { holder } = this.getBlockByIndex(index);
+    const block = this.getBlockByIndex(index);
+    const { holder } = block;
+    const { isEmpty } = block;
+    const level = this.getToggleLevel(index, holder);
     this.createToggle();
     setTimeout(() => {
+      if (this.isAToggleItem(holder)) {
+        this.setLevel(level + 1);
+      } else { this.setLevel(level); }
       this.renderItems();
       this.setInitialIconTransition();
-      if (this.isAToggleItem(holder)) { this.nestBlock(index); }
+      if (this.isAToggleItem(holder)) {
+        if (isEmpty || this.data.with_shortcut) {
+          this.nestBlock(index);
+        } else { this.nestBlock(index + 1); }
+      }
     });
     return this.wrapper;
   }
@@ -336,9 +347,8 @@ export default class ToggleBlock {
   createToggleRootWithShortcut(index, holder) {
     const content = holder.textContent;
 
-    // Convert current paragraph block into a toggle root
     if ((content[0] === '>')) {
-      this.api.blocks.insert('toggle', { text: content.substring(2) }, this.api, index, true);
+      this.api.blocks.insert('toggle', { text: content.substring(2), with_shortcut: true }, this.api, index, true);
       this.api.blocks.delete(index + 1);
       this.api.caret.setToBlock(index);
     }
@@ -502,6 +512,10 @@ export default class ToggleBlock {
     holder.setAttribute('id', uuidv4());
     holder.classList.add('toggle-block__item');
 
+    if (this.isAToggleRoot(holder)) {
+      holder.style.marginLeft = `${this.data.level * 39}px`;
+    } else { holder.style.marginLeft = `${(this.data.level + 1) * 39}px`; }
+
     if (!this.readOnly) {
       holder.onkeydown = this.setEventsToNestedBlock.bind(this);
       holder.querySelector('.cdx-block').focus();
@@ -570,6 +584,17 @@ export default class ToggleBlock {
     svg.style.transform = `rotate(${status === 'closed' ? 0 : 90}deg)`;
   }
 
+  /**
+   * Add attribute to the Toggle root holder with the indentation level
+   * @param {Number} level
+   *
+   */
+  setLevel(level) {
+    this.data.level = level;
+    const { holder } = this.getBlockByIndex(this.getCurrentBlockIndex());
+    holder.setAttribute('level', level);
+  }
+
   // ----------------------------------------- Getter methods -----------------------------------
 
   getIndex = (target) => Array.from(target.parentNode.children).indexOf(target);
@@ -582,13 +607,8 @@ export default class ToggleBlock {
   getToggleId(index) {
     const { holder } = this.getBlockByIndex(index);
     let foreignKey;
-    if (this.isAToggleRoot(holder)) {
-      const toggle = holder.querySelector('.toggle-block__selector');
-      foreignKey = toggle.getAttribute('id');
-    }
-    if (this.isAToggleItem(holder)) {
-      foreignKey = holder.getAttribute('foreignKey');
-    }
+    if (this.isAToggleRoot(holder)) { foreignKey = holder.querySelector('.toggle-block__selector').getAttribute('id'); }
+    if (this.isAToggleItem(holder)) { foreignKey = holder.getAttribute('foreignKey'); }
     return foreignKey;
   }
 
@@ -660,6 +680,18 @@ export default class ToggleBlock {
       counter += 1;
     });
     return counter;
+  }
+
+  /**
+   * Return the Toggle parent indentation level
+   * @param {Number} - Toggle child index
+   * @param {HTMLDivElement} holder - Toggle child Div block
+   * @returns {Number}
+   */
+  getToggleLevel(index, holder) {
+    const toggleIndex = this.findToogleRootIndex(index, holder.getAttribute('foreignKey'));
+    const toggle = this.getBlockByIndex(toggleIndex).holder;
+    return Number(toggle.getAttribute('level'));
   }
 
   // -------------------------  Validation methods ---------------------------------
